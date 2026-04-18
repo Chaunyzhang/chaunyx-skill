@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chauny X Skill"
+  short_description: "Watch selected X authors via browser."
+  default_prompt: "Monitor selected X authors through a logged-in browser session, capture recent posts, dedupe them, summarize them in Chinese, and append a report."
