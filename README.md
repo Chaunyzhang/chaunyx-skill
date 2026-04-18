@@ -66,6 +66,7 @@ python scripts/x_manual_monitor.py check --config .\x-manual-monitor.json
 python scripts/x_manual_monitor.py make-batch-template .\batch.json --config .\x-manual-monitor.json
 python scripts/x_manual_monitor.py make-capture-pack .\capture-pack --config .\x-manual-monitor.json
 python scripts/x_manual_monitor.py auto-collect --config .\x-manual-monitor.json --browser chromium
+python scripts/x_manual_monitor.py watch-once --config .\x-manual-monitor.json --browser chromium
 python scripts/x_manual_monitor.py ingest .\batch.json --config .\x-manual-monitor.json
 ```
 
@@ -99,6 +100,14 @@ python scripts/x_manual_monitor.py ingest .\batch.json --config .\x-manual-monit
 - ✅ 每次只抓最近 3 到 10 条帖子
 - ✅ 先小名单验证，再扩作者数
 - ✅ 页面能匿名看就不强依赖登录
+- ✅ 真正做监控时优先用 `watch-once`
+
+## 监控语义
+
+| 情况 | 行为 |
+| --- | --- |
+| 有新帖 | 产出新事件，更新报告，返回 `status: updated` |
+| 无新帖 | 返回 `status: idle`，不重写报告 |
 
 ## 当前限制
 

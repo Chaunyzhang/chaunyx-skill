@@ -143,18 +143,14 @@ class IngestResult:
     skipped_count: int
 
 
-def ingest_batch(batch_path: Path, config_path: Path) -> Dict[str, Any]:
+def ingest_rows(rows: List[Dict[str, Any]], config_path: Path, *, write_report_on_empty: bool = True) -> Dict[str, Any]:
     config = load_config(config_path)
     paths = ensure_runtime_paths(config)
     state = load_state(paths["state"])
-    raw_rows = json.loads(batch_path.read_text(encoding="utf-8-sig"))
-    if not isinstance(raw_rows, list):
-        raise ValueError("Batch file must contain a JSON array of post objects.")
-
     seen = set(state.get("seen_post_ids", []))
     new_items: List[Dict[str, Any]] = []
     skipped_count = 0
-    for row in raw_rows:
+    for row in rows:
         item = normalize_post(row)
         if item["post_id"] in seen:
             skipped_count += 1
@@ -166,7 +162,9 @@ def ingest_batch(batch_path: Path, config_path: Path) -> Dict[str, Any]:
     save_state(paths["state"], state)
     if new_items:
         append_jsonl(paths["events"], new_items)
-    paths["report"].write_text(render_report(new_items), encoding="utf-8")
+        paths["report"].write_text(render_report(new_items), encoding="utf-8")
+    elif write_report_on_empty:
+        paths["report"].write_text(render_report(new_items), encoding="utf-8")
     return {
         "success": True,
         "new_items": len(new_items),
@@ -175,6 +173,13 @@ def ingest_batch(batch_path: Path, config_path: Path) -> Dict[str, Any]:
         "state_path": str(paths["state"]),
         "report_path": str(paths["report"]),
     }
+
+
+def ingest_batch(batch_path: Path, config_path: Path, *, write_report_on_empty: bool = True) -> Dict[str, Any]:
+    raw_rows = json.loads(batch_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(raw_rows, list):
+        raise ValueError("Batch file must contain a JSON array of post objects.")
+    return ingest_rows(raw_rows, config_path, write_report_on_empty=write_report_on_empty)
 
 
 def check_config(config_path: Path) -> Dict[str, Any]:
@@ -218,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
     auto_parser.add_argument("--limit-per-author", type=int, default=None, help="Override max posts per author")
     auto_parser.add_argument("--browser", default="chromium", help="Playwright browser type or channel hint")
     auto_parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+
+    watch_parser = subparsers.add_parser("watch-once", help="Run one silent monitoring pass and emit only when new posts exist")
+    watch_parser.add_argument("--limit-per-author", type=int, default=None, help="Override max posts per author")
+    watch_parser.add_argument("--browser", default="chromium", help="Playwright browser type or channel hint")
+    watch_parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
     ingest_parser = subparsers.add_parser("ingest", help="Ingest a JSON batch of collected posts")
     ingest_parser.add_argument("batch_path", help="Path to a JSON array of collected posts")
@@ -361,7 +371,14 @@ def collect_posts_for_author(page, username: str, label: str, limit: int) -> Lis
     return posts
 
 
-def auto_collect(config_path: Path, browser_name: str = "chromium", headless: bool = False, limit_override: int | None = None) -> Dict[str, Any]:
+def auto_collect(
+    config_path: Path,
+    browser_name: str = "chromium",
+    headless: bool = False,
+    limit_override: int | None = None,
+    *,
+    monitor_mode: bool = False,
+) -> Dict[str, Any]:
     config = load_config(config_path)
     paths = ensure_runtime_paths(config)
     authors = config.get("authors", [])
@@ -392,12 +409,15 @@ def auto_collect(config_path: Path, browser_name: str = "chromium", headless: bo
 
     batch_path = paths["output_dir"] / "events" / "auto-batch.json"
     write_json(batch_path, batch_rows)
-    ingest_result = ingest_batch(batch_path, config_path)
+    ingest_result = ingest_rows(batch_rows, config_path, write_report_on_empty=not monitor_mode)
+    status = "updated" if ingest_result.get("new_items", 0) > 0 else "idle"
     return {
         "success": True,
+        "status": status,
         "batch_path": str(batch_path),
         "collected_rows": len(batch_rows),
         "ingest_result": ingest_result,
+        "message": "New posts detected and ingested." if status == "updated" else "No new posts detected.",
     }
 
 
@@ -441,6 +461,17 @@ def main() -> int:
             browser_name=args.browser,
             headless=args.headless,
             limit_override=args.limit_per_author,
+        )
+        print(json_dump(result))
+        return 0 if result.get("success") else 1
+
+    if args.command == "watch-once":
+        result = auto_collect(
+            config_path,
+            browser_name=args.browser,
+            headless=args.headless,
+            limit_override=args.limit_per_author,
+            monitor_mode=True,
         )
         print(json_dump(result))
         return 0 if result.get("success") else 1

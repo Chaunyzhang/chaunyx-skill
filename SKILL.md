@@ -103,6 +103,19 @@ This generates:
 - `author-urls.txt`
 - `capture-checklist.md`
 
+For automated monitoring, use:
+
+```powershell
+python scripts/x_manual_monitor.py auto-collect --config .\x-manual-monitor.json --browser chromium
+python scripts/x_manual_monitor.py watch-once --config .\x-manual-monitor.json --browser chromium
+```
+
+`watch-once` is the monitor-first path:
+
+- if there are new posts, it writes events and refreshes the report
+- if there are no new posts, it returns `status: idle`
+- when idle, it does not overwrite the existing report with an empty one
+
 ### 4. Ingest and deduplicate
 
 ```powershell
@@ -129,6 +142,7 @@ For reliable collection:
 - collect only the newest few posts
 - keep the watchlist small
 - run on a human-paced cadence such as once or twice daily
+- use the automated collector with randomized delays and partial scrolls
 
 ## Output Shape
 
