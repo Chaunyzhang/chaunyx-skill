@@ -91,6 +91,18 @@ python scripts/x_manual_monitor.py make-batch-template .\batch-template.json --c
 
 Then replace the empty fields with the posts you copied from the browser.
 
+For an easier operator workflow, create a helper pack:
+
+```powershell
+python scripts/x_manual_monitor.py make-capture-pack .\capture-pack --config .\x-manual-monitor.json
+```
+
+This generates:
+
+- `batch-template.json`
+- `author-urls.txt`
+- `capture-checklist.md`
+
 ### 4. Ingest and deduplicate
 
 ```powershell

@@ -208,6 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
     template_parser = subparsers.add_parser("make-batch-template", help="Create an empty batch template from the watchlist")
     template_parser.add_argument("output_path", help="Path to write the batch template JSON")
 
+    helper_parser = subparsers.add_parser("make-capture-pack", help="Create a capture helper pack for manual browser collection")
+    helper_parser.add_argument("output_dir", help="Directory to write helper files into")
+
     ingest_parser = subparsers.add_parser("ingest", help="Ingest a JSON batch of collected posts")
     ingest_parser.add_argument("batch_path", help="Path to a JSON array of collected posts")
     return parser
@@ -239,6 +242,53 @@ def make_batch_template(config_path: Path, output_path: Path) -> Dict[str, Any]:
     }
 
 
+def make_capture_pack(config_path: Path, output_dir: Path) -> Dict[str, Any]:
+    config = load_config(config_path)
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    batch_path = output_dir / "batch-template.json"
+    urls_path = output_dir / "author-urls.txt"
+    checklist_path = output_dir / "capture-checklist.md"
+
+    template_result = make_batch_template(config_path, batch_path)
+    authors = config.get("authors", [])
+    urls = [f"https://x.com/{author['username']}" for author in authors]
+    urls_path.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+
+    checklist_lines = [
+        "# Capture Checklist",
+        "",
+        "## Author Pages",
+        "",
+    ]
+    for author in authors:
+        checklist_lines.append(f"- @{author['username']}: https://x.com/{author['username']}")
+    checklist_lines.extend(
+        [
+            "",
+            "## Manual Steps",
+            "",
+            "1. Open each author page.",
+            "2. Skip irrelevant pinned reposts unless they matter.",
+            "3. Copy the newest 3-5 posts into batch-template.json.",
+            "4. Fill post_id, url, published_at, and text.",
+            "5. Run the ingest command when ready.",
+            "",
+            "## Ingest Command",
+            "",
+            f"`python scripts/x_manual_monitor.py ingest \"{batch_path}\" --config \"{config_path.resolve()}\"`",
+            "",
+        ]
+    )
+    checklist_path.write_text("\n".join(checklist_lines), encoding="utf-8")
+    return {
+        "success": True,
+        "batch_template": template_result["template_path"],
+        "author_urls": str(urls_path),
+        "checklist": str(checklist_path),
+    }
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -265,6 +315,11 @@ def main() -> int:
 
     if args.command == "make-batch-template":
         result = make_batch_template(config_path, Path(args.output_path))
+        print(json_dump(result))
+        return 0 if result.get("success") else 1
+
+    if args.command == "make-capture-pack":
+        result = make_capture_pack(config_path, Path(args.output_dir))
         print(json_dump(result))
         return 0 if result.get("success") else 1
 
