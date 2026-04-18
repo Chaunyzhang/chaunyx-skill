@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+from playwright.sync_api import sync_playwright
 
 
 DEFAULT_CONFIG = {
@@ -211,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
     helper_parser = subparsers.add_parser("make-capture-pack", help="Create a capture helper pack for manual browser collection")
     helper_parser.add_argument("output_dir", help="Directory to write helper files into")
 
+    auto_parser = subparsers.add_parser("auto-collect", help="Automatically collect recent posts from watched authors")
+    auto_parser.add_argument("--limit-per-author", type=int, default=None, help="Override max posts per author")
+    auto_parser.add_argument("--browser", default="chromium", help="Playwright browser type or channel hint")
+    auto_parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+
     ingest_parser = subparsers.add_parser("ingest", help="Ingest a JSON batch of collected posts")
     ingest_parser.add_argument("batch_path", help="Path to a JSON array of collected posts")
     return parser
@@ -289,6 +297,110 @@ def make_capture_pack(config_path: Path, output_dir: Path) -> Dict[str, Any]:
     }
 
 
+def author_url(username: str) -> str:
+    return f"https://x.com/{username}"
+
+
+def parse_post_id(url: str) -> str:
+    match = re.search(r"/status/(\d+)", url)
+    return match.group(1) if match else ""
+
+
+def collect_posts_for_author(page, username: str, label: str, limit: int) -> List[Dict[str, Any]]:
+    page.goto(author_url(username), wait_until="domcontentloaded", timeout=120000)
+    page.wait_for_timeout(4000)
+    posts: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    scroll_attempts = 0
+
+    while len(posts) < limit and scroll_attempts < 6:
+        articles = page.locator("article").all()
+        for article in articles:
+            try:
+                links = article.locator("a[href*='/status/']").evaluate_all(
+                    """els => els.map(el => el.href).filter(Boolean)"""
+                )
+                status_url = next((link for link in links if "/status/" in link), "")
+                post_id = parse_post_id(status_url)
+                if not post_id or post_id in seen_ids:
+                    continue
+
+                text_parts = article.locator("[data-testid='tweetText']").all_inner_texts()
+                text = "\n".join(part.strip() for part in text_parts if part.strip()).strip()
+                if not text:
+                    continue
+
+                time_value = ""
+                time_nodes = article.locator("time").all()
+                if time_nodes:
+                    try:
+                        time_value = time_nodes[0].get_attribute("datetime") or ""
+                    except Exception:
+                        time_value = ""
+
+                posts.append(
+                    {
+                        "post_id": post_id,
+                        "author": username,
+                        "label": label,
+                        "url": status_url or f"https://x.com/{username}/status/{post_id}",
+                        "published_at": time_value or utc_now_iso(),
+                        "text": text,
+                    }
+                )
+                seen_ids.add(post_id)
+                if len(posts) >= limit:
+                    break
+            except Exception:
+                continue
+        if len(posts) >= limit:
+            break
+        page.mouse.wheel(0, 2400)
+        page.wait_for_timeout(2500)
+        scroll_attempts += 1
+    return posts
+
+
+def auto_collect(config_path: Path, browser_name: str = "chromium", headless: bool = False, limit_override: int | None = None) -> Dict[str, Any]:
+    config = load_config(config_path)
+    paths = ensure_runtime_paths(config)
+    authors = config.get("authors", [])
+    if not authors:
+        return {"success": False, "message": "authors list is empty"}
+
+    limit = limit_override or int(config.get("max_posts_per_author", 10))
+    batch_rows: List[Dict[str, Any]] = []
+    profile_dir = paths["output_dir"] / "browser-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        browser_type = getattr(p, browser_name if browser_name in {"chromium", "firefox", "webkit"} else "chromium")
+        launch_kwargs = {
+            "user_data_dir": str(profile_dir),
+            "headless": headless,
+        }
+        if browser_name in {"chrome", "msedge"}:
+            launch_kwargs["channel"] = browser_name
+            browser_type = p.chromium
+        context = browser_type.launch_persistent_context(**launch_kwargs)
+        page = context.new_page()
+        for author in authors:
+            username = author["username"]
+            label = author.get("label") or username
+            batch_rows.extend(collect_posts_for_author(page, username, label, limit))
+        context.close()
+
+    batch_path = paths["output_dir"] / "events" / "auto-batch.json"
+    write_json(batch_path, batch_rows)
+    ingest_result = ingest_batch(batch_path, config_path)
+    return {
+        "success": True,
+        "batch_path": str(batch_path),
+        "collected_rows": len(batch_rows),
+        "ingest_result": ingest_result,
+    }
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -320,6 +432,16 @@ def main() -> int:
 
     if args.command == "make-capture-pack":
         result = make_capture_pack(config_path, Path(args.output_dir))
+        print(json_dump(result))
+        return 0 if result.get("success") else 1
+
+    if args.command == "auto-collect":
+        result = auto_collect(
+            config_path,
+            browser_name=args.browser,
+            headless=args.headless,
+            limit_override=args.limit_per_author,
+        )
         print(json_dump(result))
         return 0 if result.get("success") else 1
 
